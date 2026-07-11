@@ -1,0 +1,66 @@
+{
+  "transactions": [
+    {
+      "id": "1783795581779nhj6fpaxksm",
+      "type": "rashod",
+      "category": "hrana",
+      "description": "Pizza",
+      "date": "2026-07-11",
+      "currency": "RSD",
+      "amount": 1100,
+      "amountEUR": 9.37766410912191,
+      "loanId": null
+    },
+    {
+      "id": "1783793777687cs7lob0avwn",
+      "type": "rashod",
+      "category": "hrana",
+      "description": "Idea hrana",
+      "date": "2026-07-11",
+      "currency": "RSD",
+      "amount": 1011.07,
+      "amountEUR": 8.619522591645355,
+      "loanId": null
+    },
+    {
+      "id": "1783793444769rqqrj1xbylj",
+      "type": "prihod",
+      "category": "ostalo_prihod",
+      "description": "Prenos",
+      "date": "2026-07-11",
+      "currency": "EUR",
+      "amount": 620.4,
+      "amountEUR": 620.4,
+      "loanId": null
+    },
+    {
+      "id": "1783793388481a7j4yc48itc",
+      "type": "prihod",
+      "category": "ostalo_prihod",
+      "description": "Prenos",
+      "date": "2026-07-11",
+      "currency": "RSD",
+      "amount": 21480,
+      "amountEUR": 183.12020460358056,
+      "loanId": null
+    }
+  ],
+  "rates": {
+    "EUR": 1,
+    "RSD": 0.008525149190110827,
+    "USD": 0.92
+  },
+  "loans": [
+    {
+      "id": "loan_1783793570289fp0g1upgdxj",
+      "name": "Otplata minusa",
+      "currency": "EUR",
+      "principal": 5096.25,
+      "principalEUR": 5096.25,
+      "monthlyPayment": 0,
+      "createdAt": "2026-07-11"
+    }
+  ],
+  "exportedAt": "2026-07-11T18:52:22.871Z",
+  "version": 1
+}
