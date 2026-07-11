@@ -1,0 +1,1133 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Glavna knjiga</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #12151A; }
+  body { font-family: 'Segoe UI', system-ui, -apple-system, Arial, sans-serif; color: #E9E7E1; }
+  .num { font-family: Consolas, 'Courier New', monospace; font-variant-numeric: tabular-nums; }
+  .display { font-family: 'Segoe UI', system-ui, sans-serif; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #2C313A; border-radius: 8px; }
+  input, select, button { font-family: inherit; }
+  input:focus, select:focus, button:focus-visible { outline: 2px solid #8FD4B0; outline-offset: 1px; }
+  select { appearance: none; -webkit-appearance: none; }
+  .card-row:active { transform: scale(0.995); }
+  .del-btn { opacity: 0.55; transition: opacity .15s; cursor: pointer; background: none; border: none; color: #5E6570; padding: 4px; font-size: 14px; }
+  .del-btn:hover { opacity: 1; }
+  .wrap { max-width: 620px; margin: 0 auto; padding: 20px 16px 60px; }
+  .box { background: #161A20; border: 1px solid #23272F; border-radius: 16px; }
+  .lbl { font-size: 11.5px; color: #5E6570; display: block; margin-bottom: 12px; }
+  .inp { display: block; width: 100%; margin-top: 5px; background: #12151A; border: 1px solid #2C313A; border-radius: 8px; color: #E9E7E1; padding: 10px 12px; font-size: 13.5px; height: 42px; }
+  .pillbtn { padding: 7px 14px; border-radius: 20px; font-size: 12.5px; font-weight: 600; cursor: pointer; border: 1px solid #262B34; background: transparent; color: #868D99; }
+  .pillbtn.active { border: 1px solid #8FD4B0; background: rgba(143,212,176,0.15); color: #A8ECD0; }
+  .toggle-btn { flex: 1; padding: 11px; border-radius: 10px; font-weight: 600; font-size: 13.5px; cursor: pointer; border: 1px solid #262B34; background: transparent; color: #868D99; }
+  .toggle-btn.income.active { border: 1px solid #8FD4B0; background: rgba(143,212,176,0.15); color: #A8ECD0; }
+  .toggle-btn.expense.active { border: 1px solid #E8A0A0; background: rgba(232,160,160,0.15); color: #F0BEBE; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var DEFAULT_RATES = { EUR: 1, RSD: 1 / 117.3, USD: 0.92 };
+  var EXPENSE_CURRENCIES = ['EUR', 'RSD', 'USD', 'OSTALO'];
+  var DISPLAY_CURRENCIES = ['RSD', 'USD'];
+
+  var INCOME_CATEGORIES = [
+    { id: 'rws', label: 'RWS / prevod', icon: '\uD83C\uDFE2' },
+    { id: 'freelance', label: 'Freelance prevod', icon: '\uD83D\uDCBB' },
+    { id: 'preprodaja', label: 'Prodaja odeće', icon: '\uD83D\uDC55' },
+    { id: 'ostalo_prihod', label: 'Ostalo', icon: '\u2795' }
+  ];
+  var EXPENSE_CATEGORIES = [
+    { id: 'stanovanje', label: 'Stanovanje / kirija', icon: '\uD83C\uDFE0' },
+    { id: 'racuni', label: 'Računi / komunalije', icon: '\u26A1' },
+    { id: 'hrana', label: 'Hrana', icon: '\uD83C\uDF54' },
+    { id: 'transport', label: 'Transport / gorivo', icon: '\u26FD' },
+    { id: 'dug', label: 'Otplata duga', icon: '\uD83D\uDCB3' },
+    { id: 'biznis', label: 'Biznis / obrt', icon: '\uD83D\uDCBC' },
+    { id: 'zdravlje', label: 'Zdravlje', icon: '\u2764\uFE0F' },
+    { id: 'ostalo_rashod', label: 'Ostalo', icon: '\uD83D\uDCE6' }
+  ];
+  var ALL_CATEGORIES = INCOME_CATEGORIES.concat(EXPENSE_CATEGORIES);
+  function catInfo(id) {
+    for (var i = 0; i < ALL_CATEGORIES.length; i++) if (ALL_CATEGORIES[i].id === id) return ALL_CATEGORIES[i];
+    return { label: id || 'Ostalo', icon: '\uD83D\uDCE6' };
+  }
+
+  function fmt(n, cur) {
+    cur = cur || 'EUR';
+    var num = new Intl.NumberFormat('sr-RS', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n || 0);
+    return num + ' ' + cur;
+  }
+  function todayISO() { return new Date().toISOString().slice(0, 10); }
+  function dateLabel(iso) {
+    var d = new Date(iso + 'T00:00:00');
+    return d.toLocaleDateString('sr-RS', { day: '2-digit', month: 'short' });
+  }
+
+  var STORAGE_TX = 'gk_transactions_v1';
+  var STORAGE_RATES = 'gk_rates_v1';
+  var STORAGE_LOANS = 'gk_loans_v1';
+  function loadLocal(key, fallback) {
+    try { var raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fallback; } catch (e) { return fallback; }
+  }
+  function saveLocal(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
+  }
+
+  // ---- cvrsto cuvanje u pravi fajl na disku (File System Access API - samo Chrome/Edge) ----
+  var fsSupported = typeof window.showSaveFilePicker === 'function';
+  var dataFileHandle = null;
+  var FS_DB_NAME = 'gk_filehandle_db';
+  var FS_STORE_NAME = 'handles';
+
+  function openHandleDB() {
+    return new Promise(function (resolve, reject) {
+      var req = indexedDB.open(FS_DB_NAME, 1);
+      req.onupgradeneeded = function () { req.result.createObjectStore(FS_STORE_NAME); };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error); };
+    });
+  }
+  function saveHandleToDB(handle) {
+    return openHandleDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(FS_STORE_NAME, 'readwrite');
+        tx.objectStore(FS_STORE_NAME).put(handle, 'dataFile');
+        tx.oncomplete = function () { resolve(); };
+        tx.onerror = function () { reject(tx.error); };
+      });
+    });
+  }
+  function loadHandleFromDB() {
+    return openHandleDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(FS_STORE_NAME, 'readonly');
+        var req = tx.objectStore(FS_STORE_NAME).get('dataFile');
+        req.onsuccess = function () { resolve(req.result || null); };
+        req.onerror = function () { reject(req.error); };
+      });
+    });
+  }
+  function verifyPermission(handle, readWrite) {
+    var opts = readWrite ? { mode: 'readwrite' } : {};
+    return handle.queryPermission(opts).then(function (state) {
+      if (state === 'granted') return true;
+      return handle.requestPermission(opts).then(function (state2) { return state2 === 'granted'; });
+    });
+  }
+  function updateFileStatus(state, name) {
+    var el = document.getElementById('fileLinkStatus');
+    if (!el) return;
+    if (!fsSupported) {
+      el.innerHTML = '<span style="color:#5E6570">Ovaj browser ne podržava čuvanje u fajl (radi u Chrome/Edge). Koristi \uD83D\uDCBE Backup dugme redovno.</span>';
+      return;
+    }
+    if (state === 'connected') {
+      el.innerHTML = '<span class="conn-dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#8FD4B0;margin-right:6px"></span>Povezano: ' + escapeHTML(name || '') + '. Svaka izmena se odmah upisuje u taj fajl.';
+    } else if (state === 'needs-permission') {
+      el.innerHTML = '<span class="conn-dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#F0BEBE;margin-right:6px"></span>Ranije povezan fajl "' + escapeHTML(name || '') + '" \u2014 <button id="btnResumeFile" style="background:none;border:none;color:#A8C4F0;text-decoration:underline;cursor:pointer;font-size:11.5px;padding:0">nastavi</button>';
+      var btn = document.getElementById('btnResumeFile');
+      if (btn) btn.addEventListener('click', resumeFileHandle);
+    } else if (state === 'error') {
+      el.innerHTML = '<span style="color:#F0BEBE">Greška pri upisu u fajl. Podaci su i dalje sačuvani lokalno (localStorage) + koristi \uD83D\uDCBE Backup kao rezervu.</span>';
+    } else {
+      el.innerHTML = '<span style="color:#5E6570">Nije povezan fajl na disku \u2014 podaci se čuvaju samo u browseru (rizičnije). Poveži fajl za pouzdano čuvanje.</span>';
+    }
+  }
+
+  function writeDataToFile() {
+    if (!dataFileHandle) return Promise.resolve();
+    return verifyPermission(dataFileHandle, true).then(function (ok) {
+      if (!ok) { updateFileStatus('error'); return; }
+      return dataFileHandle.createWritable().then(function (writable) {
+        var payload = JSON.stringify({ transactions: transactions, rates: rates, loans: loans, savedAt: new Date().toISOString(), version: 1 }, null, 2);
+        return writable.write(payload).then(function () { return writable.close(); });
+      }).then(function () { updateFileStatus('connected', dataFileHandle.name); });
+    }).catch(function (err) { console.error('Greska pri upisu u fajl:', err); updateFileStatus('error'); });
+  }
+  function touchFile() { writeDataToFile(); }
+
+  function readDataFromFile(handle) {
+    return handle.getFile().then(function (file) { return file.text(); }).then(function (text) {
+      var data = JSON.parse(text);
+      transactions = data.transactions || [];
+      rates = data.rates || Object.assign({}, DEFAULT_RATES);
+      loans = data.loans || [];
+      saveLocal(STORAGE_TX, transactions);
+      saveLocal(STORAGE_RATES, rates);
+      saveLocal(STORAGE_LOANS, loans);
+    });
+  }
+
+  function connectExistingFile() {
+    window.showOpenFilePicker({
+      types: [{ description: 'Glavna knjiga podaci', accept: { 'application/json': ['.json'] } }],
+      multiple: false
+    }).then(function (handles) {
+      var handle = handles[0];
+      return verifyPermission(handle, true).then(function (ok) {
+        if (!ok) { alert('Nije odobren pristup fajlu.'); return; }
+        return readDataFromFile(handle).then(function () {
+          dataFileHandle = handle;
+          return saveHandleToDB(handle);
+        }).then(function () {
+          updateFileStatus('connected', handle.name);
+          renderAll();
+        });
+      });
+    }).catch(function (err) { if (err.name !== 'AbortError') console.error(err); });
+  }
+
+  function createNewFile() {
+    window.showSaveFilePicker({
+      suggestedName: 'glavna-knjiga-data.json',
+      types: [{ description: 'Glavna knjiga podaci', accept: { 'application/json': ['.json'] } }]
+    }).then(function (handle) {
+      dataFileHandle = handle;
+      return saveHandleToDB(handle).then(function () { return writeDataToFile(); }).then(function () {
+        updateFileStatus('connected', handle.name);
+      });
+    }).catch(function (err) { if (err.name !== 'AbortError') console.error(err); });
+  }
+
+  function resumeFileHandle() {
+    loadHandleFromDB().then(function (handle) {
+      if (!handle) return;
+      return verifyPermission(handle, true).then(function (ok) {
+        if (!ok) { updateFileStatus('needs-permission', handle.name); return; }
+        return readDataFromFile(handle).then(function () {
+          dataFileHandle = handle;
+          updateFileStatus('connected', handle.name);
+          renderAll();
+        });
+      });
+    }).catch(function (err) { console.error(err); });
+  }
+
+  function initFileLink() {
+    if (!fsSupported) { updateFileStatus('unsupported'); return; }
+    loadHandleFromDB().then(function (handle) {
+      if (!handle) { updateFileStatus('none'); return; }
+      return handle.queryPermission({ mode: 'readwrite' }).then(function (state) {
+        if (state === 'granted') {
+          return readDataFromFile(handle).then(function () {
+            dataFileHandle = handle;
+            updateFileStatus('connected', handle.name);
+            renderAll();
+          });
+        } else {
+          updateFileStatus('needs-permission', handle.name);
+        }
+      });
+    }).catch(function (err) { console.error(err); updateFileStatus('none'); });
+  }
+
+  // ---- inline SVG chart builders ----
+  function areaSparkSVG(data, key, height) {
+    height = height || 54;
+    var w = 300, h = height;
+    var values = data.map(function (d) { return d[key]; }).filter(function (v) { return v !== null && v !== undefined; });
+    if (values.length < 2) return '';
+    var min = Math.min.apply(null, values), max = Math.max.apply(null, values);
+    var range = (max - min) || 1;
+    var n = data.length;
+    var pts = [];
+    data.forEach(function (d, i) {
+      var v = d[key];
+      if (v === null || v === undefined) return;
+      pts.push({ x: (i / (n - 1)) * w, y: h - ((v - min) / range) * h });
+    });
+    if (pts.length < 2) return '';
+    var lineStr = pts.map(function (p) { return p.x + ',' + p.y; }).join(' ');
+    var areaStr = pts[0].x + ',' + h + ' ' + lineStr + ' ' + pts[pts.length - 1].x + ',' + h;
+    return '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" style="width:100%;height:' + h + 'px">' +
+      '<polygon points="' + areaStr + '" fill="#8FD4B0" opacity="0.18"></polygon>' +
+      '<polyline points="' + lineStr + '" fill="none" stroke="#8FD4B0" stroke-width="2"></polyline></svg>';
+  }
+
+  function projectionSVG(data, height) {
+    height = height || 100;
+    var w = 300, h = height;
+    var n = data.length;
+    var allVals = [];
+    data.forEach(function (d) {
+      if (d.balance !== null && d.balance !== undefined) allVals.push(d.balance);
+      if (d.projected !== null && d.projected !== undefined) allVals.push(d.projected);
+    });
+    if (allVals.length < 2) return '';
+    var min = Math.min.apply(null, allVals), max = Math.max.apply(null, allVals);
+    var range = (max - min) || 1;
+    function xAt(i) { return (i / (n - 1)) * w; }
+    function yAt(v) { return h - ((v - min) / range) * h; }
+    var balPts = [], projPts = [];
+    data.forEach(function (d, i) {
+      if (d.balance !== null && d.balance !== undefined) balPts.push(xAt(i) + ',' + yAt(d.balance));
+      if (d.projected !== null && d.projected !== undefined) projPts.push(xAt(i) + ',' + yAt(d.projected));
+    });
+    return '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" style="width:100%;height:' + h + 'px">' +
+      '<polyline points="' + balPts.join(' ') + '" fill="none" stroke="#8FD4B0" stroke-width="2"></polyline>' +
+      '<polyline points="' + projPts.join(' ') + '" fill="none" stroke="#A8ECD0" stroke-width="2" stroke-dasharray="5 4"></polyline></svg>';
+  }
+
+  function investSVG(data, height) {
+    height = height || 100;
+    var w = 300, h = height;
+    var n = data.length;
+    if (n < 2) return '';
+    var vals = [];
+    data.forEach(function (d) { vals.push(d.value, d.contributed); });
+    var max = Math.max.apply(null, vals.concat([1]));
+    function xAt(i) { return (i / (n - 1)) * w; }
+    function yAt(v) { return h - (v / max) * h; }
+    var valPts = data.map(function (d, i) { return xAt(i) + ',' + yAt(d.value); }).join(' ');
+    var contribPts = data.map(function (d, i) { return xAt(i) + ',' + yAt(d.contributed); }).join(' ');
+    var areaPts = '0,' + h + ' ' + valPts + ' ' + w + ',' + h;
+    return '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" style="width:100%;height:' + h + 'px">' +
+      '<polygon points="' + areaPts + '" fill="#8FD4B0" opacity="0.18"></polygon>' +
+      '<polyline points="' + valPts + '" fill="none" stroke="#8FD4B0" stroke-width="2"></polyline>' +
+      '<polyline points="' + contribPts + '" fill="none" stroke="#5E6570" stroke-width="1.5" stroke-dasharray="4 3"></polyline></svg>';
+  }
+
+  // ---- state ----
+  var transactions = loadLocal(STORAGE_TX, []);
+  var rates = loadLocal(STORAGE_RATES, DEFAULT_RATES);
+  var loans = loadLocal(STORAGE_LOANS, []);
+  var filterType = 'SVE';
+  var displayCurrency = 'RSD';
+  var currentType = 'prihod';
+  var horizon = 6;
+  var invMonthly = 0;
+  var invReturn = 7;
+  var invYears = 5;
+  var invTouched = false;
+
+  // ---- derived data ----
+  function computeTotals() {
+    var income = 0, expense = 0;
+    transactions.forEach(function (t) {
+      if (t.type === 'prihod') income += t.amountEUR;
+      else if (t.type === 'rashod') expense += t.amountEUR;
+      // 'konverzija' (ATM/EUR->RSD prebacaj) se ne racuna kao prihod ni rashod - nije nova vrednost, samo premestanje
+    });
+    return { income: income, expense: expense, balance: income - expense };
+  }
+  function computeNativeBalances() {
+    var sorted = transactions.slice().sort(function (a, b) {
+      var d = new Date(a.date) - new Date(b.date);
+      if (d !== 0) return d;
+      return a.id < b.id ? -1 : 1;
+    });
+    var bal = {};
+    var rsdRate = rates.RSD != null ? rates.RSD : DEFAULT_RATES.RSD;
+    sorted.forEach(function (t) {
+      var cur = t.currency || 'EUR';
+      if (bal[cur] === undefined) bal[cur] = 0;
+      if (t.type === 'konverzija') {
+        // ATM podizanje: EUR se naplacuje sa kartice, RSD se dobija u kes - cista zamena, ne prihod
+        if (bal.EUR === undefined) bal.EUR = 0;
+        bal.EUR -= t.amountEUR;
+        bal.RSD = (bal.RSD || 0) + t.amount;
+        return;
+      }
+      if (t.type === 'prihod') {
+        bal[cur] += t.amount;
+        return;
+      }
+      if (cur === 'RSD') {
+        var available = bal.RSD || 0;
+        var payFromRSD = Math.max(0, Math.min(available, t.amount));
+        var remainder = t.amount - payFromRSD;
+        bal.RSD = available - payFromRSD;
+        if (remainder > 0) {
+          // RSD saldo nedovoljan (ili 0) - razlika se povlači iz EUR balansa
+          if (bal.EUR === undefined) bal.EUR = 0;
+          bal.EUR -= remainder * rsdRate;
+        }
+      } else {
+        bal[cur] -= t.amount;
+      }
+    });
+    return bal;
+  }
+  function computeWithBalance() {
+    var sorted = transactions.slice().sort(function (a, b) {
+      var d = new Date(a.date) - new Date(b.date);
+      if (d !== 0) return d;
+      return a.id < b.id ? -1 : 1;
+    });
+    var bal = 0;
+    return sorted.map(function (t) {
+      bal += t.type === 'prihod' ? t.amountEUR : (t.type === 'rashod' ? -t.amountEUR : 0);
+      var copy = {}; for (var k in t) copy[k] = t[k];
+      copy.balance = bal;
+      return copy;
+    });
+  }
+  function computeMonthlyNet() {
+    var map = {};
+    transactions.forEach(function (t) {
+      if (t.type !== 'prihod' && t.type !== 'rashod') return;
+      var m = t.date.slice(0, 7);
+      map[m] = (map[m] || 0) + (t.type === 'prihod' ? t.amountEUR : -t.amountEUR);
+    });
+    var months = Object.keys(map).sort();
+    var recent = months.slice(-6);
+    if (recent.length === 0) return 0;
+    var sum = 0; recent.forEach(function (m) { sum += map[m]; });
+    return sum / recent.length;
+  }
+  function computeMonthCount() {
+    var map = {};
+    transactions.forEach(function (t) { map[t.date.slice(0, 7)] = 1; });
+    return Math.min(6, Math.max(1, Object.keys(map).length));
+  }
+  function computeInvestmentProjection() {
+    var r = invReturn / 100 / 12;
+    var n = invYears * 12;
+    var value = 0, contributed = 0;
+    var data = [{ month: 0, value: 0, contributed: 0 }];
+    var step = Math.max(1, Math.round(n / 24));
+    for (var i = 1; i <= n; i++) {
+      value = r > 0 ? value * (1 + r) + invMonthly : value + invMonthly;
+      contributed += invMonthly;
+      if (i % step === 0 || i === n) data.push({ month: i, value: Math.round(value), contributed: Math.round(contributed) });
+    }
+    return data;
+  }
+
+  // ---- render: static shell (built once) ----
+  var root = document.getElementById('root');
+  root.innerHTML =
+    '<div style="min-height:100vh;background:#12151A;color:#E9E7E1">' +
+      '<div style="border-bottom:1px solid #23272F;padding:24px 18px 20px">' +
+        '<div style="max-width:620px;margin:0 auto;display:flex;align-items:center;justify-content:space-between">' +
+          '<div style="display:flex;align-items:center;gap:10px">' +
+            '<div style="width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,#8FD4B0,#5CA98A);display:flex;align-items:center;justify-content:center;font-size:16px">\uD83D\uDCB0</div>' +
+            '<h1 class="display" style="font-size:19px;font-weight:700;margin:0">Glavna knjiga</h1>' +
+          '</div>' +
+          '<div style="display:flex;align-items:center;gap:8px">' +
+            '<button id="btnExport" title="Sačuvaj backup" style="background:#1A1E25;border:1px solid #2C313A;color:#C7CBD3;width:36px;height:36px;border-radius:9px;cursor:pointer;font-size:15px">\uD83D\uDCBE</button>' +
+            '<button id="btnImportTrigger" title="Učitaj backup" style="background:#1A1E25;border:1px solid #2C313A;color:#C7CBD3;width:36px;height:36px;border-radius:9px;cursor:pointer;font-size:15px">\uD83D\uDCC2</button>' +
+            '<input type="file" id="importFile" accept="application/json" style="display:none" />' +
+            '<button id="btnSettings" style="background:#1A1E25;border:1px solid #2C313A;color:#C7CBD3;width:36px;height:36px;border-radius:9px;cursor:pointer;font-size:15px">\u2699\uFE0F</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="wrap">' +
+        '<div id="settingsPanel" class="box" style="padding:18px;margin-bottom:20px;display:none">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">' +
+            '<h3 class="display" style="margin:0;font-size:14px;font-weight:600">\uD83D\uDCC1 Čuvanje u fajl na disku</h3>' +
+            '<button id="btnCloseSettings" style="background:none;border:none;color:#868D99;cursor:pointer;font-size:15px">\u2715</button>' +
+          '</div>' +
+          '<div id="fileLinkStatus" style="font-size:11.5px;color:#5E6570;line-height:1.6;margin-bottom:10px"></div>' +
+          '<div style="display:flex;gap:8px;margin-bottom:16px">' +
+            '<button id="btnConnectExisting" style="flex:1;background:#1A1E25;border:1px solid #2C313A;color:#C7CBD3;border-radius:9px;padding:9px;font-size:12px;cursor:pointer">\uD83D\uDCC2 Otvori postojeći</button>' +
+            '<button id="btnCreateNewFile" style="flex:1;background:#1A1E25;border:1px solid #2C313A;color:#C7CBD3;border-radius:9px;padding:9px;font-size:12px;cursor:pointer">\uD83C\uDD95 Napravi novi fajl</button>' +
+          '</div>' +
+          '<div style="border-top:1px solid #23272F;padding-top:14px;margin-bottom:12px">' +
+            '<h3 class="display" style="margin:0 0 12px;font-size:14px;font-weight:600">Kursevi (1 jedinica \u2192 EUR)</h3>' +
+            '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px">' +
+              '<label style="font-size:12px;color:#868D99">RSD<input id="rateRSD" type="number" step="0.0001" class="num inp" /></label>' +
+              '<label style="font-size:12px;color:#868D99">USD<input id="rateUSD" type="number" step="0.0001" class="num inp" /></label>' +
+            '</div>' +
+          '</div>' +
+          '<p style="font-size:11px;color:#5E6570;margin:0">HRK je uklonjena (Hrvatska koristi EUR od 2023).</p>' +
+        '</div>' +
+
+        '<div class="box" style="background:linear-gradient(160deg,#182A22,#141A18);border:1px solid #23372C;padding:20px 20px 10px;margin-bottom:14px">' +
+          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">' +
+            '<div>' +
+              '<div style="font-size:11.5px;color:#9FCBB0;font-weight:600;letter-spacing:.04em;text-transform:uppercase">EUR (kartica/keš)</div>' +
+              '<div id="eurBalance" class="num display" style="font-size:26px;font-weight:700;margin-top:6px"></div>' +
+            '</div>' +
+            '<div style="border-left:1px solid #23372C;padding-left:14px">' +
+              '<div style="font-size:11.5px;color:#9FCBB0;font-weight:600;letter-spacing:.04em;text-transform:uppercase">Keš (RSD)</div>' +
+              '<div id="rsdBalance" class="num display" style="font-size:26px;font-weight:700;margin-top:6px"></div>' +
+            '</div>' +
+          '</div>' +
+          '<div id="otherCurrencyRow" style="font-size:11.5px;color:#868D99;margin-top:8px"></div>' +
+          '<div style="font-size:10px;color:#4A505A;margin-top:4px">Ako RSD saldo nije dovoljan za rashod u RSD, razlika se automatski povlači iz EUR balansa.</div>' +
+          '<div style="display:flex;gap:16px;margin-top:12px;font-size:12.5px">' +
+            '<span style="color:#9FCBB0">\u2197 <span id="incomeTotal"></span></span>' +
+            '<span style="color:#E8A0A0">\u2198 <span id="expenseTotal"></span></span>' +
+          '</div>' +
+          '<div style="font-size:10.5px;color:#5E6570;margin-top:6px">Procenjena ukupna vrednost (EUR ekv., sve valute preračunate): <span id="totalEquivBalance" class="num"></span></div>' +
+          '<div id="heroSpark" style="margin-top:6px;margin-left:-6px;margin-right:-6px"></div>' +
+        '</div>' +
+
+        '<div class="box" style="padding:18px;margin-bottom:20px">' +
+          '<div style="display:flex;gap:8px;margin-bottom:14px">' +
+            '<button id="btnTypeIncome" class="toggle-btn income">\u2191 Prihod</button>' +
+            '<button id="btnTypeExpense" class="toggle-btn expense">\u2193 Rashod</button>' +
+          '</div>' +
+          '<label class="lbl">Kategorija' +
+            '<div style="position:relative;margin-top:5px">' +
+              '<span id="categoryEmoji" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);font-size:15px"></span>' +
+              '<select id="categorySelect" class="inp" style="padding-left:38px"></select>' +
+            '</div>' +
+          '</label>' +
+          '<div id="currencyWrap" style="display:none">' +
+            '<label class="lbl">Valuta<select id="currencySelect" class="inp"></select></label>' +
+          '</div>' +
+          '<div id="loanWrap" style="display:none">' +
+            '<label class="lbl">Kredit (opciono)<select id="loanSelect" class="inp"><option value="">Bez povezivanja</option></select></label>' +
+          '</div>' +
+          '<div id="customCurrencyWrap" style="display:none;gap:10px;margin-bottom:12px">' +
+            '<label class="lbl" style="flex:1">Naziv valute<input id="customCurrencyInput" type="text" class="inp" placeholder="npr. CHF" /></label>' +
+            '<label class="lbl" style="flex:1">Kurs \u2192 EUR<input id="customRateInput" type="number" step="0.0001" class="num inp" placeholder="0.00" /></label>' +
+          '</div>' +
+          '<label class="lbl" id="amountLabel">Iznos' +
+            '<input id="amountInput" type="number" step="0.01" min="0" class="num inp" placeholder="0.00" style="font-size:20px;font-weight:600" />' +
+          '</label>' +
+          '<div style="display:flex;gap:10px;margin-bottom:14px">' +
+            '<label class="lbl" style="flex:1">Datum<input id="dateInput" type="date" class="inp" /></label>' +
+            '<label class="lbl" style="flex:1.4">Opis (opciono)<input id="noteInput" type="text" class="inp" placeholder="npr. jul kirija" /></label>' +
+          '</div>' +
+          '<button id="btnAdd" style="width:100%;border:none;border-radius:10px;padding:13px;font-weight:700;font-size:14.5px;cursor:pointer;color:#12151A"></button>' +
+          '<div id="formError" style="color:#F0A0A0;font-size:12.5px;margin-top:10px;text-align:center"></div>' +
+        '</div>' +
+
+        '<div class="box" style="padding:18px;margin-bottom:20px">' +
+          '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span style="font-size:16px">\uD83C\uDFE7</span><h3 class="display" style="margin:0;font-size:15px;font-weight:600">ATM podizanje (EUR \u2192 RSD keš)</h3></div>' +
+          '<p style="font-size:12px;color:#5E6570;margin:2px 0 14px">Ovo NIJE prihod \u2014 samo prebacuje sa EUR na RSD keš, tačno onoliko koliko ti kartica naplati.</p>' +
+          '<div style="display:flex;gap:10px;margin-bottom:12px">' +
+            '<label class="lbl" style="flex:1">Podignuto (RSD)<input id="atmRsdInput" type="number" min="0" step="10" class="num inp" placeholder="0.00" /></label>' +
+            '<label class="lbl" style="flex:1">Naplaćeno sa kartice (EUR)<input id="atmEurInput" type="number" min="0" step="0.01" class="num inp" placeholder="0.00" /></label>' +
+          '</div>' +
+          '<div style="display:flex;gap:10px;margin-bottom:12px">' +
+            '<label class="lbl" style="flex:1">Datum<input id="atmDateInput" type="date" class="inp" /></label>' +
+            '<label class="lbl" style="flex:1.4">Opis (opciono)<input id="atmNoteInput" type="text" class="inp" placeholder="npr. ATM Beograd" /></label>' +
+          '</div>' +
+          '<button id="btnAddAtm" style="width:100%;background:#A8C4F0;color:#0C1210;border:none;border-radius:10px;padding:12px;font-weight:700;font-size:13.5px;cursor:pointer">+ Dodaj podizanje</button>' +
+          '<div id="atmError" style="color:#F0A0A0;font-size:12.5px;margin-top:10px;text-align:center"></div>' +
+        '</div>' +
+
+        '<div id="filterBtns" style="display:flex;gap:8px;margin-bottom:12px"></div>' +
+        '<div id="txList" style="display:flex;flex-direction:column;gap:8px"></div>' +
+        '<div id="txTotal" class="box" style="padding:16px 18px;margin-top:10px"></div>' +
+
+        '<div class="box" style="padding:18px;margin-top:14px">' +
+          '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px"><span style="font-size:16px">\uD83D\uDCC5</span><h3 class="display" style="margin:0;font-size:15px;font-weight:600">Mesečni pregled</h3></div>' +
+          '<div id="monthlyList"></div>' +
+        '</div>' +
+
+        '<div class="box" style="padding:18px;margin-top:14px">' +
+          '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span style="font-size:16px">\uD83C\uDFE6</span><h3 class="display" style="margin:0;font-size:15px;font-weight:600">Krediti / dugovi</h3></div>' +
+          '<p style="font-size:12px;color:#5E6570;margin:2px 0 14px">Dodaj kredit, pa kad unosiš rashod sa kategorijom "Otplata duga" poveži ga sa kreditom \u2014 preostali dug se sam smanjuje.</p>' +
+          '<div id="loanCards" style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px"></div>' +
+          '<div style="border-top:1px solid #23272F;padding-top:14px">' +
+            '<div style="display:flex;gap:10px;margin-bottom:10px">' +
+              '<label class="lbl" style="flex:1.4">Naziv kredita<input id="loanNameInput" type="text" class="inp" placeholder="npr. Stambeni kredit" /></label>' +
+              '<label class="lbl" style="flex:1">Valuta<select id="loanCurrencyInput" class="inp"><option value="EUR" selected>EUR</option><option value="RSD">RSD</option><option value="USD">USD</option></select></label>' +
+            '</div>' +
+            '<div style="display:flex;gap:10px;margin-bottom:10px">' +
+              '<label class="lbl" style="flex:1">Ukupan iznos duga<input id="loanPrincipalInput" type="number" min="0" step="1" class="num inp" placeholder="0.00" /></label>' +
+              '<label class="lbl" style="flex:1">Mesečna rata (opciono)<input id="loanPaymentInput" type="number" min="0" step="1" class="num inp" placeholder="0.00" /></label>' +
+            '</div>' +
+            '<button id="btnAddLoan" style="width:100%;background:#A8C4F0;color:#0C1210;border:none;border-radius:10px;padding:12px;font-weight:700;font-size:13.5px;cursor:pointer">+ Dodaj kredit</button>' +
+            '<div id="loanError" style="color:#F0A0A0;font-size:12.5px;margin-top:10px;text-align:center"></div>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="box" style="padding:18px;margin-top:22px">' +
+          '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span style="font-size:16px">\u2728</span><h3 class="display" style="margin:0;font-size:15px;font-weight:600">Auto-projekcija balansa</h3></div>' +
+          '<p id="monthlyNetText" style="font-size:12px;color:#5E6570;margin:2px 0 14px"></p>' +
+          '<div id="horizonBtns" style="display:flex;gap:8px;margin-bottom:12px"></div>' +
+          '<div class="box" style="background:#12151A;padding:14px 16px;margin-bottom:14px">' +
+            '<div id="horizonLabel" style="font-size:11.5px;color:#5E6570"></div>' +
+            '<div id="projectedBalance" class="num display" style="font-size:24px;font-weight:700;margin-top:4px"></div>' +
+          '</div>' +
+          '<div id="projectionChart" style="margin-bottom:4px"></div>' +
+          '<div style="border-top:1px solid #23272F;margin:18px 0 16px"></div>' +
+          '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span style="font-size:16px">\uD83D\uDC37</span><h3 class="display" style="margin:0;font-size:15px;font-weight:600">Kalkulator koinvestiranja (DCA)</h3></div>' +
+          '<p style="font-size:12px;color:#5E6570;margin:2px 0 14px">Simulacija redovnog mesečnog ulaganja dela viška \u2014 npr. u ETF ili zajedno sa nekim za koinvestiranje.</p>' +
+          '<div style="display:flex;flex-direction:column;gap:12px;margin-bottom:14px">' +
+            '<label class="lbl">Mesečna investicija (EUR)<input id="invMonthlyInput" type="number" min="0" step="10" class="num inp" /></label>' +
+            '<div style="display:flex;gap:10px">' +
+              '<label class="lbl" style="flex:1">Očekivani god. prinos (%)<input id="invReturnInput" type="number" min="0" max="30" step="0.5" class="num inp" /></label>' +
+              '<label class="lbl" style="flex:1">Period (godine)<input id="invYearsInput" type="number" min="1" max="30" step="1" class="num inp" /></label>' +
+            '</div>' +
+          '</div>' +
+          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">' +
+            '<div class="box" style="background:#12151A;padding:12px 14px"><div style="font-size:11px;color:#5E6570">Uloženo ukupno</div><div id="invContributed" class="num" style="font-size:17px;font-weight:700;margin-top:4px"></div></div>' +
+            '<div class="box" style="background:#12151A;border-color:#23372C;padding:12px 14px"><div style="font-size:11px;color:#9FCBB0">Projektovana vrednost</div><div id="invValue" class="num" style="font-size:17px;font-weight:700;margin-top:4px;color:#A8ECD0"></div><div id="invGrowth" style="font-size:10.5px;color:#5E6570;margin-top:2px"></div></div>' +
+          '</div>' +
+          '<div id="investChart" style="margin-bottom:4px"></div>' +
+          '<div class="box" style="background:#12151A;padding:14px 16px;margin-top:14px">' +
+            '<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><span style="font-size:13px">\u2139\uFE0F</span><span style="font-size:11.5px;color:#868D99;font-weight:600;text-transform:uppercase;letter-spacing:.03em">Opšte smernice</span></div>' +
+            '<ul style="margin:0;padding-left:18px;font-size:12.5px;color:#A6ACB6;line-height:1.7">' +
+              '<li>Prvo pokrij rezervu za hitne slučajeve pre nego što redovno ulažeš.</li>' +
+              '<li>Skuplji dug (visoke kamate) po pravilu ima prioritet nad ulaganjem.</li>' +
+              '<li>DCA (redovno ulaganje istog iznosa) smanjuje rizik lošeg trenutka ulaska na tržište.</li>' +
+              '<li>Diversifikacija (npr. široki indeksni ETF-ovi) smanjuje rizik u odnosu na pojedinačne pozicije; kripto drži kao manji, rizičniji deo portfolija ako uopšte.</li>' +
+              '<li>Ako koinvestiraš sa nekim, jasno definišite udele, izlaznu strategiju i ko donosi odluke pre nego što uložite.</li>' +
+            '</ul>' +
+            '<p style="font-size:11px;color:#5E6570;margin:10px 0 0">Ovo su opšte edukativne smernice, ne finansijski savet prilagođen tvojoj situaciji. Nisam finansijski savetnik \u2014 za konkretne odluke razmisli o konsultaciji sa licenciranim savetnikom.</p>' +
+          '</div>' +
+        '</div>' +
+
+        '<p style="text-align:center;color:#4A505A;font-size:11px;margin-top:18px">Podaci se čuvaju u ovom browseru, vezano za ovaj tačan fajl. Redovno pravi 💾 backup (gore desno) da ih ne izgubiš.</p>' +
+      '</div>' +
+    '</div>';
+
+  // ---- populate static-ish controls ----
+  var currSel = document.getElementById('currencySelect');
+  EXPENSE_CURRENCIES.forEach(function (c) {
+    var o = document.createElement('option'); o.value = c; o.textContent = c === 'OSTALO' ? 'Ostalo\u2026' : c;
+    currSel.appendChild(o);
+  });
+  currSel.value = 'EUR';
+  currSel.addEventListener('change', function () {
+    document.getElementById('customCurrencyWrap').style.display = currSel.value === 'OSTALO' ? 'flex' : 'none';
+    updateAmountLabel();
+  });
+
+  document.getElementById('dateInput').value = todayISO();
+
+  document.getElementById('rateRSD').value = rates.RSD;
+  document.getElementById('rateUSD').value = rates.USD;
+  ['RSD', 'USD'].forEach(function (cur) {
+    document.getElementById('rate' + cur).addEventListener('input', function (e) {
+      rates[cur] = parseFloat(e.target.value) || 0;
+      saveLocal(STORAGE_RATES, rates);
+      touchFile();
+      renderHero();
+    });
+  });
+
+  document.getElementById('btnSettings').addEventListener('click', function () {
+    var p = document.getElementById('settingsPanel');
+    p.style.display = p.style.display === 'none' ? 'block' : 'none';
+  });
+  document.getElementById('btnCloseSettings').addEventListener('click', function () {
+    document.getElementById('settingsPanel').style.display = 'none';
+  });
+  document.getElementById('btnConnectExisting').addEventListener('click', connectExistingFile);
+  document.getElementById('btnCreateNewFile').addEventListener('click', createNewFile);
+
+  // ---- backup export / import (odbrana od gubitka podataka) ----
+  document.getElementById('btnExport').addEventListener('click', function () {
+    var backup = { transactions: transactions, rates: rates, loans: loans, exportedAt: new Date().toISOString(), version: 1 };
+    var blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'glavna-knjiga-backup-' + todayISO() + '.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  });
+
+  document.getElementById('btnImportTrigger').addEventListener('click', function () {
+    document.getElementById('importFile').click();
+  });
+
+  document.getElementById('importFile').addEventListener('change', function (e) {
+    var file = e.target.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function (ev) {
+      var data;
+      try { data = JSON.parse(ev.target.result); } catch (err) {
+        alert('Fajl nije validan JSON backup.');
+        return;
+      }
+      if (!data || !Array.isArray(data.transactions)) {
+        alert('Ovo ne izgleda kao backup Glavne knjige.');
+        return;
+      }
+      var msg = 'Ovo će ZAMENITI trenutne podatke u aplikaciji sa ' + data.transactions.length + ' transakcija iz backupa (' + (data.exportedAt ? data.exportedAt.slice(0, 10) : '?') + '). Nastaviti?';
+      if (!window.confirm(msg)) { e.target.value = ''; return; }
+      transactions = data.transactions || [];
+      rates = data.rates || Object.assign({}, DEFAULT_RATES);
+      loans = data.loans || [];
+      saveLocal(STORAGE_TX, transactions);
+      saveLocal(STORAGE_RATES, rates);
+      saveLocal(STORAGE_LOANS, loans);
+      touchFile();
+      document.getElementById('rateRSD').value = rates.RSD;
+      document.getElementById('rateUSD').value = rates.USD;
+      e.target.value = '';
+      renderAll();
+      alert('Podaci uspešno učitani.');
+    };
+    reader.readAsText(file);
+  });
+
+  function setType(t) {
+    currentType = t;
+    document.getElementById('btnTypeIncome').classList.toggle('active', t === 'prihod');
+    document.getElementById('btnTypeExpense').classList.toggle('active', t === 'rashod');
+    document.getElementById('currencyWrap').style.display = 'block';
+    document.getElementById('customCurrencyWrap').style.display = currSel.value === 'OSTALO' ? 'flex' : 'none';
+    var list = t === 'prihod' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
+    var sel = document.getElementById('categorySelect');
+    sel.innerHTML = list.map(function (c) { return '<option value="' + c.id + '">' + c.icon + ' ' + c.label + '</option>'; }).join('');
+    document.getElementById('categoryEmoji').textContent = list[0].icon;
+    var btnAdd = document.getElementById('btnAdd');
+    btnAdd.style.background = t === 'prihod' ? '#8FD4B0' : '#E8A0A0';
+    btnAdd.textContent = '+ Dodaj ' + (t === 'prihod' ? 'prihod' : 'rashod');
+    document.getElementById('formError').textContent = '';
+    updateAmountLabel();
+    updateLoanWrapVisibility();
+  }
+
+  function updateLoanWrapVisibility() {
+    var wrap = document.getElementById('loanWrap');
+    var sel = document.getElementById('categorySelect');
+    var show = currentType === 'rashod' && sel && sel.value === 'dug' && loans.length > 0;
+    wrap.style.display = show ? 'block' : 'none';
+  }
+  document.getElementById('categorySelect').addEventListener('change', function () {
+    document.getElementById('categoryEmoji').textContent = catInfo(this.value).icon;
+    updateLoanWrapVisibility();
+  });
+  document.getElementById('btnTypeIncome').addEventListener('click', function () { setType('prihod'); });
+  document.getElementById('btnTypeExpense').addEventListener('click', function () { setType('rashod'); });
+
+  function updateAmountLabel() {
+    var cur = currSel.value === 'OSTALO' ? (document.getElementById('customCurrencyInput').value || '?') : currSel.value;
+    document.getElementById('amountLabel').firstChild.textContent = 'Iznos (' + cur + ')';
+  }
+  document.getElementById('customCurrencyInput').addEventListener('input', updateAmountLabel);
+
+  // filter buttons
+  var filterBtns = document.getElementById('filterBtns');
+  [['SVE', 'Sve'], ['prihod', 'Prihodi'], ['rashod', 'Rashodi'], ['konverzija', 'Konverzije']].forEach(function (pair) {
+    var b = document.createElement('button');
+    b.className = 'pillbtn' + (pair[0] === filterType ? ' active' : '');
+    b.textContent = pair[1];
+    b.addEventListener('click', function () {
+      filterType = pair[0];
+      Array.prototype.forEach.call(filterBtns.children, function (c) { c.classList.remove('active'); });
+      b.classList.add('active');
+      renderList();
+    });
+    filterBtns.appendChild(b);
+  });
+
+  // horizon buttons
+  var horizonBtns = document.getElementById('horizonBtns');
+  [3, 6, 12].forEach(function (h) {
+    var b = document.createElement('button');
+    b.className = 'pillbtn' + (h === horizon ? ' active' : '');
+    b.style.flex = '1';
+    b.textContent = h + ' mes.';
+    b.addEventListener('click', function () {
+      horizon = h;
+      Array.prototype.forEach.call(horizonBtns.children, function (c) { c.classList.remove('active'); });
+      b.classList.add('active');
+      renderProjections();
+    });
+    horizonBtns.appendChild(b);
+  });
+
+  // investment inputs
+  var invMonthlyInput = document.getElementById('invMonthlyInput');
+  var invReturnInput = document.getElementById('invReturnInput');
+  var invYearsInput = document.getElementById('invYearsInput');
+  invReturnInput.value = invReturn;
+  invYearsInput.value = invYears;
+  invMonthlyInput.addEventListener('input', function () {
+    invTouched = true;
+    invMonthly = parseFloat(invMonthlyInput.value) || 0;
+    renderInvestment();
+  });
+  invReturnInput.addEventListener('input', function () {
+    invReturn = parseFloat(invReturnInput.value) || 0;
+    renderInvestment();
+  });
+  invYearsInput.addEventListener('input', function () {
+    invYears = parseInt(invYearsInput.value, 10) || 1;
+    renderInvestment();
+  });
+  [invMonthlyInput, invReturnInput, invYearsInput].forEach(function (el) {
+    el.addEventListener('wheel', function (e) { el.blur(); });
+  });
+  document.getElementById('amountInput').addEventListener('wheel', function (e) { this.blur(); });
+
+  // add transaction
+  document.getElementById('btnAdd').addEventListener('click', function () {
+    var errEl = document.getElementById('formError');
+    errEl.textContent = '';
+    var amt = parseFloat(document.getElementById('amountInput').value);
+    if (!amt || amt <= 0) { errEl.textContent = 'Unesi iznos veći od nule.'; return; }
+    var type = currentType;
+    var category = document.getElementById('categorySelect').value;
+    var note = document.getElementById('noteInput').value.trim();
+    var date = document.getElementById('dateInput').value || todayISO();
+    var cur = currSel.value;
+    var customCurrency = document.getElementById('customCurrencyInput').value;
+    var customRate = document.getElementById('customRateInput').value;
+    if (cur === 'OSTALO') {
+      if (!customCurrency.trim()) { errEl.textContent = 'Unesi naziv valute.'; return; }
+      if (!customRate || parseFloat(customRate) <= 0) { errEl.textContent = 'Unesi kurs za EUR.'; return; }
+    }
+    var rate = cur === 'EUR' ? 1 : (cur === 'OSTALO' ? (parseFloat(customRate) || 0) : (rates[cur] != null ? rates[cur] : 1));
+    var amountEUR = amt * rate;
+    var loanSel = document.getElementById('loanSelect');
+    var loanId = (category === 'dug' && loanSel && loanSel.value) ? loanSel.value : null;
+    var tx = {
+      id: Date.now() + Math.random().toString(36).slice(2),
+      type: type, category: category, description: note, date: date,
+      currency: cur === 'OSTALO' ? customCurrency.trim().toUpperCase() : cur,
+      amount: amt, amountEUR: amountEUR, loanId: loanId
+    };
+    transactions.unshift(tx);
+    saveLocal(STORAGE_TX, transactions);
+    touchFile();
+
+    // reset form
+    document.getElementById('noteInput').value = '';
+    document.getElementById('amountInput').value = '';
+    document.getElementById('customCurrencyInput').value = '';
+    document.getElementById('customRateInput').value = '';
+    document.getElementById('dateInput').value = todayISO();
+    if (loanSel) loanSel.value = '';
+
+    renderAll();
+  });
+
+  // ---- ATM podizanje / konverzija EUR -> RSD ----
+  document.getElementById('atmDateInput').value = todayISO();
+  document.getElementById('atmRsdInput').addEventListener('input', function () {
+    var eurField = document.getElementById('atmEurInput');
+    if (eurField.dataset.userEdited === '1') return; // ne pregazi ako je korisnik rucno izmenio EUR iznos
+    var rsd = parseFloat(this.value) || 0;
+    var rsdRate = rates.RSD != null ? rates.RSD : DEFAULT_RATES.RSD;
+    eurField.value = rsd > 0 ? (rsd * rsdRate).toFixed(2) : '';
+  });
+  document.getElementById('atmEurInput').addEventListener('input', function () {
+    this.dataset.userEdited = '1';
+  });
+
+  document.getElementById('btnAddAtm').addEventListener('click', function () {
+    var errEl = document.getElementById('atmError');
+    errEl.textContent = '';
+    var rsdAmt = parseFloat(document.getElementById('atmRsdInput').value);
+    var eurAmt = parseFloat(document.getElementById('atmEurInput').value);
+    if (!rsdAmt || rsdAmt <= 0) { errEl.textContent = 'Unesi iznos podignut u RSD.'; return; }
+    if (!eurAmt || eurAmt <= 0) { errEl.textContent = 'Unesi iznos naplaćen sa kartice u EUR.'; return; }
+    var date = document.getElementById('atmDateInput').value || todayISO();
+    var note = document.getElementById('atmNoteInput').value.trim();
+    var tx = {
+      id: Date.now() + Math.random().toString(36).slice(2),
+      type: 'konverzija', category: null, description: note || 'ATM podizanje', date: date,
+      currency: 'RSD', amount: rsdAmt, amountEUR: eurAmt, loanId: null
+    };
+    transactions.unshift(tx);
+    saveLocal(STORAGE_TX, transactions);
+    touchFile();
+
+    document.getElementById('atmRsdInput').value = '';
+    document.getElementById('atmEurInput').value = '';
+    document.getElementById('atmEurInput').dataset.userEdited = '0';
+    document.getElementById('atmNoteInput').value = '';
+    document.getElementById('atmDateInput').value = todayISO();
+
+    renderAll();
+  });
+
+  // ---- loans / debts ----
+  function loanCurrencyRate(cur) { return cur === 'EUR' ? 1 : (rates[cur] != null ? rates[cur] : 1); }
+
+  document.getElementById('btnAddLoan').addEventListener('click', function () {
+    var errEl = document.getElementById('loanError');
+    errEl.textContent = '';
+    var name = document.getElementById('loanNameInput').value.trim();
+    var currency = document.getElementById('loanCurrencyInput').value;
+    var principal = parseFloat(document.getElementById('loanPrincipalInput').value);
+    var monthlyPayment = parseFloat(document.getElementById('loanPaymentInput').value) || 0;
+    if (!name) { errEl.textContent = 'Unesi naziv kredita.'; return; }
+    if (!principal || principal <= 0) { errEl.textContent = 'Unesi ukupan iznos duga veći od nule.'; return; }
+    var loan = {
+      id: 'loan_' + Date.now() + Math.random().toString(36).slice(2),
+      name: name, currency: currency, principal: principal,
+      principalEUR: principal * loanCurrencyRate(currency),
+      monthlyPayment: monthlyPayment, createdAt: todayISO()
+    };
+    loans.push(loan);
+    saveLocal(STORAGE_LOANS, loans);
+    touchFile();
+    document.getElementById('loanNameInput').value = '';
+    document.getElementById('loanPrincipalInput').value = '';
+    document.getElementById('loanPaymentInput').value = '';
+    renderAll();
+  });
+
+  document.getElementById('loanCards').addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-del-loan]');
+    if (!btn) return;
+    var id = btn.getAttribute('data-del-loan');
+    loans = loans.filter(function (l) { return l.id !== id; });
+    saveLocal(STORAGE_LOANS, loans);
+    touchFile();
+    // otkaci transakcije koje su bile povezane sa ovim kreditom (ne brisemo ih, samo raskidamo vezu)
+    transactions.forEach(function (t) { if (t.loanId === id) t.loanId = null; });
+    saveLocal(STORAGE_TX, transactions);
+    touchFile();
+    renderAll();
+  });
+
+  function computeLoanStats(loan) {
+    var paidEUR = 0;
+    transactions.forEach(function (t) {
+      if (t.type === 'rashod' && t.loanId === loan.id) paidEUR += t.amountEUR;
+    });
+    var remainingEUR = Math.max(0, loan.principalEUR - paidEUR);
+    var rate = loanCurrencyRate(loan.currency);
+    return {
+      paid: paidEUR / rate,
+      remaining: remainingEUR / rate,
+      paidEUR: paidEUR,
+      remainingEUR: remainingEUR,
+      pct: loan.principalEUR > 0 ? Math.min(100, (paidEUR / loan.principalEUR) * 100) : 0
+    };
+  }
+
+  function renderLoans() {
+    var sel = document.getElementById('loanSelect');
+    var currentVal = sel.value;
+    sel.innerHTML = '<option value="">Bez povezivanja</option>' +
+      loans.map(function (l) { return '<option value="' + l.id + '">' + escapeHTML(l.name) + '</option>'; }).join('');
+    sel.value = loans.some(function (l) { return l.id === currentVal; }) ? currentVal : '';
+    updateLoanWrapVisibility();
+
+    var container = document.getElementById('loanCards');
+    if (loans.length === 0) {
+      container.innerHTML = '<div style="padding:16px 0;text-align:center;color:#5E6570;font-size:12.5px">Još nema dodatih kredita.</div>';
+      return;
+    }
+    container.innerHTML = loans.map(function (loan) {
+      var s = computeLoanStats(loan);
+      var monthlyTxt = loan.monthlyPayment ? ('Rata: ' + fmt(loan.monthlyPayment, loan.currency) + '/mes.') : '';
+      return '<div class="box" style="background:#12151A;padding:14px 16px">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
+          '<div style="font-size:13.5px;font-weight:700">' + escapeHTML(loan.name) + '</div>' +
+          '<button class="del-btn" data-del-loan="' + loan.id + '">\uD83D\uDDD1</button>' +
+        '</div>' +
+        '<div style="height:6px;background:#23272F;border-radius:4px;overflow:hidden;margin-bottom:10px">' +
+          '<div style="height:100%;width:' + s.pct.toFixed(1) + '%;background:linear-gradient(90deg,#8FD4B0,#A8ECD0)"></div>' +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">' +
+          '<div><div style="font-size:10px;color:#5E6570">Ukupno</div><div class="num" style="font-size:13px;font-weight:700;margin-top:2px">' + fmt(loan.principal, loan.currency) + '</div></div>' +
+          '<div><div style="font-size:10px;color:#9FCBB0">Otplaćeno</div><div class="num" style="font-size:13px;font-weight:700;margin-top:2px;color:#A8ECD0">' + fmt(s.paid, loan.currency) + '</div></div>' +
+          '<div><div style="font-size:10px;color:#E8A0A0">Preostalo</div><div class="num" style="font-size:13px;font-weight:700;margin-top:2px;color:#F0BEBE">' + fmt(s.remaining, loan.currency) + '</div></div>' +
+        '</div>' +
+        (monthlyTxt ? '<div style="font-size:11px;color:#5E6570;margin-top:8px">' + monthlyTxt + ' \u00B7 ' + s.pct.toFixed(0) + '% otplaćeno</div>' : '<div style="font-size:11px;color:#5E6570;margin-top:8px">' + s.pct.toFixed(0) + '% otplaćeno</div>') +
+      '</div>';
+    }).join('');
+  }
+
+  // ---- render functions (targeted, don't touch inputs being typed) ----
+  function renderHero() {
+    var totals = computeTotals();
+    var native = computeNativeBalances();
+
+    var eurBal = native.EUR || 0;
+    var eurEl = document.getElementById('eurBalance');
+    eurEl.textContent = fmt(eurBal, 'EUR');
+    eurEl.style.color = eurBal >= 0 ? '#A8ECD0' : '#F0A0A0';
+
+    var rsdBal = native.RSD || 0;
+    var rsdEl = document.getElementById('rsdBalance');
+    rsdEl.textContent = fmt(rsdBal, 'RSD');
+    rsdEl.style.color = rsdBal >= 0 ? '#A8ECD0' : '#F0A0A0';
+
+    var otherRow = document.getElementById('otherCurrencyRow');
+    var otherParts = [];
+    Object.keys(native).sort().forEach(function (cur) {
+      if (cur === 'EUR' || cur === 'RSD') return;
+      otherParts.push('<span class="num">' + fmt(native[cur], cur) + '</span>');
+    });
+    otherRow.innerHTML = otherParts.length ? ('Ostale valute: ' + otherParts.join(' \u00B7 ')) : '';
+
+    document.getElementById('incomeTotal').textContent = fmt(totals.income);
+    document.getElementById('expenseTotal').textContent = fmt(totals.expense);
+    document.getElementById('totalEquivBalance').textContent = fmt(totals.balance);
+
+    var chartData = computeWithBalance().map(function (t) { return { date: t.date, balance: Number(t.balance.toFixed(2)) }; });
+    document.getElementById('heroSpark').innerHTML = areaSparkSVG(chartData, 'balance', 54);
+  }
+
+  function renderList() {
+    var withBalance = computeWithBalance();
+    var list = withBalance.slice().reverse();
+    if (filterType !== 'SVE') list = list.filter(function (t) { return t.type === filterType; });
+    var container = document.getElementById('txList');
+    if (list.length === 0) {
+      container.innerHTML = '<div class="box" style="padding:36px 16px;text-align:center;color:#5E6570;font-size:13.5px">Još nema unetih transakcija. Dodaj prvu iznad.</div>';
+      return;
+    }
+    container.innerHTML = list.map(function (t) {
+      var opisText = t.description ? escapeHTML(t.description) : '<span style="color:#4A505A">bez opisa</span>';
+
+      if (t.type === 'konverzija') {
+        return '<div class="card-row box" style="border-left:3px solid #A8C4F0;padding:13px 14px;display:flex;align-items:center;gap:12px">' +
+          '<div style="width:36px;height:36px;border-radius:10px;flex-shrink:0;display:flex;align-items:center;justify-content:center;background:rgba(168,196,240,0.16);font-size:16px">\uD83C\uDFE7</div>' +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">ATM podizanje</div>' +
+            '<div style="font-size:11.5px;color:#5E6570;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + dateLabel(t.date) + ' \u00B7 ' + opisText + '</div>' +
+          '</div>' +
+          '<div style="text-align:right;flex-shrink:0">' +
+            '<div class="num" style="font-size:13px;font-weight:700;color:#A8C4F0">\u2212' + fmt(t.amountEUR, 'EUR') + '</div>' +
+            '<div class="num" style="font-size:13px;font-weight:700;color:#A8ECD0">+' + fmt(t.amount, 'RSD') + '</div>' +
+          '</div>' +
+          '<button class="del-btn" data-del-id="' + t.id + '">\uD83D\uDDD1</button>' +
+        '</div>';
+      }
+
+      var info = catInfo(t.category);
+      var isIncome = t.type === 'prihod';
+      var secondary = (t.currency !== 'EUR') ? '<div class="num" style="font-size:11px;color:#5E6570;margin-top:1px">\u2248 ' + fmt(t.amountEUR) + '</div>' : '';
+      var loanTag = '';
+      if (t.loanId) {
+        var linkedLoan = loans.filter(function (l) { return l.id === t.loanId; })[0];
+        if (linkedLoan) loanTag = ' \u00B7 <span style="color:#A8C4F0">\uD83C\uDFE6 ' + escapeHTML(linkedLoan.name) + '</span>';
+      }
+      return '<div class="card-row box" style="border-left:3px solid ' + (isIncome ? '#8FD4B0' : '#E8A0A0') + ';padding:13px 14px;display:flex;align-items:center;gap:12px">' +
+        '<div style="width:36px;height:36px;border-radius:10px;flex-shrink:0;display:flex;align-items:center;justify-content:center;background:' + (isIncome ? 'rgba(143,212,176,0.16)' : 'rgba(232,160,160,0.16)') + ';font-size:16px">' + info.icon + '</div>' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + info.label + '</div>' +
+          '<div style="font-size:11.5px;color:#5E6570;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + dateLabel(t.date) + ' \u00B7 ' + opisText + loanTag + '</div>' +
+        '</div>' +
+        '<div style="text-align:right;flex-shrink:0">' +
+          '<div class="num" style="font-size:14.5px;font-weight:700;color:' + (isIncome ? '#A8ECD0' : '#F0BEBE') + '">' + (isIncome ? '+' : '\u2212') + fmt(t.amount, t.currency) + '</div>' +
+          secondary +
+          '<div class="num" style="font-size:10.5px;color:#5E6570;margin-top:3px">Cash balans: ' + fmt(t.balance) + '</div>' +
+        '</div>' +
+        '<button class="del-btn" data-del-id="' + t.id + '">\uD83D\uDDD1</button>' +
+      '</div>';
+    }).join('');
+  }
+
+  function renderTotal() {
+    var totals = computeTotals();
+    var el = document.getElementById('txTotal');
+    el.innerHTML =
+      '<div style="font-size:11px;color:#5E6570;text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px">Total (sve transakcije)</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">' +
+        '<div><div style="font-size:10.5px;color:#9FCBB0">Total prihodi</div><div class="num" style="font-size:15px;font-weight:700;color:#A8ECD0;margin-top:2px">' + fmt(totals.income) + '</div></div>' +
+        '<div><div style="font-size:10.5px;color:#E8A0A0">Total rashodi</div><div class="num" style="font-size:15px;font-weight:700;color:#F0BEBE;margin-top:2px">' + fmt(totals.expense) + '</div></div>' +
+        '<div><div style="font-size:10.5px;color:#868D99">Cash balans</div><div class="num" style="font-size:15px;font-weight:700;margin-top:2px;color:' + (totals.balance >= 0 ? '#A8ECD0' : '#F0A0A0') + '">' + fmt(totals.balance) + '</div></div>' +
+      '</div>';
+  }
+
+  function computeMonthlyBreakdown() {
+    var map = {};
+    transactions.forEach(function (t) {
+      if (t.type !== 'prihod' && t.type !== 'rashod') return;
+      var m = t.date.slice(0, 7);
+      if (!map[m]) map[m] = { income: 0, expense: 0 };
+      if (t.type === 'prihod') map[m].income += t.amountEUR; else map[m].expense += t.amountEUR;
+    });
+    return Object.keys(map).sort().reverse().map(function (m) {
+      var d = map[m];
+      return { month: m, income: d.income, expense: d.expense, net: d.income - d.expense };
+    });
+  }
+
+  function monthLabel(m) {
+    var d = new Date(m + '-01T00:00:00');
+    var s = d.toLocaleDateString('sr-RS', { month: 'long', year: 'numeric' });
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  }
+
+  function renderMonthly() {
+    var data = computeMonthlyBreakdown();
+    var el = document.getElementById('monthlyList');
+    if (data.length === 0) {
+      el.innerHTML = '<div style="padding:16px 0;text-align:center;color:#5E6570;font-size:12.5px">Nema još podataka po mesecima.</div>';
+      return;
+    }
+    el.innerHTML = data.map(function (d, i) {
+      return '<div style="display:flex;align-items:center;justify-content:space-between;padding:11px 0;' + (i < data.length - 1 ? 'border-bottom:1px solid #1D2129' : '') + '">' +
+        '<div style="font-size:12.5px;font-weight:600">' + monthLabel(d.month) + '</div>' +
+        '<div style="display:flex;gap:12px;font-size:11.5px" class="num">' +
+          '<span style="color:#A8ECD0">+' + fmt(d.income) + '</span>' +
+          '<span style="color:#F0BEBE">\u2212' + fmt(d.expense) + '</span>' +
+          '<span style="color:' + (d.net >= 0 ? '#A8ECD0' : '#F0A0A0') + ';font-weight:700">' + fmt(d.net) + '</span>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+  }
+  document.getElementById('txList').addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-del-id]');
+    if (!btn) return;
+    var id = btn.getAttribute('data-del-id');
+    transactions = transactions.filter(function (t) { return String(t.id) !== String(id); });
+    saveLocal(STORAGE_TX, transactions);
+    touchFile();
+    renderAll();
+  });
+
+  function renderProjections() {
+    var totals = computeTotals();
+    var monthlyNet = computeMonthlyNet();
+    var monthCount = computeMonthCount();
+    document.getElementById('monthlyNetText').innerHTML =
+      'Na osnovu proseka poslednjih ' + monthCount + ' meseci, tvoj prosečan mesečni ' + (monthlyNet >= 0 ? 'višak' : 'minus') +
+      ' je <b class="num" style="color:' + (monthlyNet >= 0 ? '#A8ECD0' : '#F0A0A0') + '">' + fmt(monthlyNet) + '</b>.';
+
+    document.getElementById('horizonLabel').textContent = 'Projektovan balans za ' + horizon + ' meseci';
+    var projectedBalance = totals.balance + monthlyNet * horizon;
+    var pbEl = document.getElementById('projectedBalance');
+    pbEl.textContent = fmt(projectedBalance);
+    pbEl.style.color = projectedBalance >= 0 ? '#A8ECD0' : '#F0A0A0';
+
+    var chartData = computeWithBalance().map(function (t) { return { date: t.date, balance: Number(t.balance.toFixed(2)) }; });
+    var past = chartData.slice(-6).map(function (p) { return { date: p.date, balance: p.balance, projected: null }; });
+    var anchor = { date: todayISO(), balance: totals.balance, projected: totals.balance };
+    var future = [];
+    for (var i = 1; i <= horizon; i++) {
+      var d = new Date(); d.setMonth(d.getMonth() + i);
+      future.push({ date: d.toISOString().slice(0, 10), balance: null, projected: Number((totals.balance + monthlyNet * i).toFixed(2)) });
+    }
+    var projData = past.concat([anchor], future);
+    document.getElementById('projectionChart').innerHTML = projectionSVG(projData, 100);
+
+    renderInvestment();
+  }
+
+  function renderInvestment() {
+    var data = computeInvestmentProjection();
+    var final = data[data.length - 1];
+    document.getElementById('invContributed').textContent = fmt(final.contributed);
+    document.getElementById('invValue').textContent = fmt(final.value);
+    document.getElementById('invGrowth').textContent = 'od čega rast: ' + fmt(final.value - final.contributed);
+    document.getElementById('investChart').innerHTML = investSVG(data, 100);
+  }
+
+  function escapeHTML(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function renderAll() {
+    renderHero();
+    renderList();
+    renderTotal();
+    renderMonthly();
+    renderLoans();
+    renderProjections();
+  }
+
+  // ---- init ----
+  setType('prihod');
+  invMonthlyInput.value = invMonthly;
+  renderAll();
+  updateFileStatus(fsSupported ? 'none' : 'unsupported');
+  initFileLink();
+})();
+</script>
+</body>
+</html>
